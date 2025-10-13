@@ -150,13 +150,18 @@ async def reminder_loop():
         reminder_id, user_id, reason, remind_at, channel_id, recurring_interval = reminder
         channel = bot.get_channel(int(channel_id))
         if channel:
+
+            remind_dt = datetime.datetime.fromisoformat(remind_at)
+            if remind_dt.tzinfo is None:
+                remind_dt = remind_dt.replace(tzinfo=pytz.UTC)
+
             embed = discord.Embed(
                 title="⏰ Reminder",
                 description=reason,
                 color=discord.Color.blurple(),
-                timestamp=datetime.datetime.utcnow()
+                timestamp=remind_dt
             )
-            embed.set_footer(text=f"Triggered at {format_german_time(datetime.datetime.utcnow().replace(tzinfo=pytz.UTC))}")
+            embed.set_footer(text=f"made with UwU")
             
             # Mention user in content to actually ping
             await channel.send(content=f"<@{user_id}>", embed=embed)
