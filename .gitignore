@@ -1,2 +1,3 @@
 .env
-game_resets.json
+data.db
+__pycache__
