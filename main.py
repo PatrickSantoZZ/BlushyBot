@@ -5,13 +5,18 @@ import asyncio
 import pytz
 import dotenv
 import os
+import re
 
 # import DB helpers
 from database import (
     init_db,
     get_all_games,
     get_message_id,
-    save_message_id
+    save_message_id,
+    add_reminder,
+    get_due_reminders,
+    delete_reminder,
+    update_reminder_time
 )
 
 dotenv.load_dotenv()
@@ -35,6 +40,43 @@ def get_next_reset(reset_hour, tz):
         reset += datetime.timedelta(days=1)
     return int(reset.timestamp())
 
+def parse_reminder_time(input_str: str):
+    now = datetime.datetime.now(pytz.timezone("Europe/Berlin"))
+
+    # 1️⃣ Absolute date
+    try:
+        absolute = datetime.datetime.strptime(input_str, "%d/%m/%Y %H:%M")
+        return pytz.timezone("Europe/Berlin").localize(absolute).astimezone(pytz.UTC)
+    except ValueError:
+        pass
+
+    # 2️⃣ Relative time: e.g., 1d2h15m, 2h30m, 45m
+    pattern = r"(?:(?P<days>\d+)d)?(?:(?P<hours>\d+)h)?(?:(?P<minutes>\d+)m)?"
+    match = re.fullmatch(pattern, input_str.strip())
+    if match:
+        days = int(match.group("days") or 0)
+        hours = int(match.group("hours") or 0)
+        minutes = int(match.group("minutes") or 0)
+        delta = datetime.timedelta(days=days, hours=hours, minutes=minutes)
+        target_time = now + delta
+        return target_time.astimezone(pytz.UTC)
+
+    raise ValueError("Invalid time format")
+
+def format_german_time(dt_utc: datetime.datetime):
+    berlin = pytz.timezone("Europe/Berlin")
+    dt_local = dt_utc.astimezone(berlin)
+    today = datetime.datetime.now(berlin).date()
+    tomorrow = today + datetime.timedelta(days=1)
+
+    if dt_local.date() == today:
+        day_str = "heute"
+    elif dt_local.date() == tomorrow:
+        day_str = "morgen"
+    else:
+        day_str = dt_local.strftime("%d/%m/%Y")  # fallback
+
+    return f"{day_str} um {dt_local.strftime('%H:%M')} Uhr"
 
 # -----------------------------
 # Core Bot Logic
@@ -85,7 +127,8 @@ async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     await init_db()
     await bot.change_presence(activity=discord.Game(name="🐈 with my Kitty Timers uwu"))
-    auto_update.start()
+    auto_update.start() # start game reset loop
+    reminder_loop.start() # start reminder loop
 
     try:
         synced = await bot.tree.sync()
@@ -94,9 +137,36 @@ async def on_ready():
         print(f"⚠️ Failed to sync: {e}")
 
 
-@tasks.loop(minutes=30) # 30 min cd loop
+# game reset loop (30 min)
+@tasks.loop(minutes=30) 
 async def auto_update():
     await update_or_create_messages()
+
+# reminder loop (once every min check)
+@tasks.loop(seconds=60)
+async def reminder_loop():
+    due = await get_due_reminders()
+    for reminder in due:
+        reminder_id, user_id, reason, remind_at, channel_id, recurring_interval = reminder
+        channel = bot.get_channel(int(channel_id))
+        if channel:
+            embed = discord.Embed(
+                title="⏰ Reminder",
+                description=reason,
+                color=discord.Color.blurple(),
+                timestamp=datetime.datetime.utcnow()
+            )
+            embed.set_footer(text=f"Triggered at {format_german_time(datetime.datetime.utcnow().replace(tzinfo=pytz.UTC))}")
+            
+            # Mention user in content to actually ping
+            await channel.send(content=f"<@{user_id}>", embed=embed)
+
+        # Handle recurring reminders
+        if recurring_interval:
+            new_time = datetime.datetime.fromisoformat(remind_at) + datetime.timedelta(seconds=recurring_interval)
+            await update_reminder_time(reminder_id, new_time)
+        else:
+            await delete_reminder(reminder_id)
 
 # -----------------------------
 # Slash Commands
@@ -125,5 +195,47 @@ async def disconnect(interaction: discord.Interaction, time: str):
     except ValueError:
         await interaction.response.send_message("❌ Invalid time format! Use HH:MM (24h).")
 
+@bot.tree.command(name="remind_me", description="Set a reminder")
+async def remind_me(interaction: discord.Interaction, reason: str, time: str):
+    try:
+        # Parse time (absolute or relative)
+        remind_time_utc = parse_reminder_time(time)
+
+        # Save reminder in DB
+        await add_reminder(
+            str(interaction.user.id),
+            reason,
+            remind_time_utc,
+            str(interaction.channel.id)
+        )
+
+        # Human-readable relative time
+        delta = remind_time_utc - datetime.datetime.now(pytz.UTC)
+        total_minutes = int(delta.total_seconds() // 60)
+        days, remainder = divmod(total_minutes, 1440)  # 1440 = 24*60
+        hours, minutes = divmod(remainder, 60)
+
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes:
+            parts.append(f"{minutes}m")
+        human_relative = "".join(parts)
+
+        german_time = format_german_time(remind_time_utc)
+
+        # Confirm to user
+        await interaction.response.send_message(
+            f"✅ Reminder set for **{german_time}** ({human_relative} from now): {reason}",
+            ephemeral=True
+        )
+
+    except ValueError:
+        await interaction.response.send_message(
+            "❌ Invalid time format! Use either DD/MM/YYYY HH:MM or relative time like 1d2h30m.",
+            ephemeral=True
+        )
 
 bot.run(TOKEN)

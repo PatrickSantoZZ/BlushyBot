@@ -3,6 +3,7 @@
 import json
 import asyncio
 import os
+import aiosqlite
 from database import init_db, add_game, save_message_id
 
 # paths to your old JSON files
@@ -50,3 +51,11 @@ async def migrate():
 
 if __name__ == "__main__":
     asyncio.run(migrate())
+
+async def add_channel_column():
+    async with aiosqlite.connect("data.db") as db:
+        await db.execute("ALTER TABLE reminders ADD COLUMN channel_id TEXT")
+        await db.commit()
+        print("✅ Added channel_id column")
+
+#asyncio.run(add_channel_column())
