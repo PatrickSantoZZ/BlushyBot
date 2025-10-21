@@ -117,3 +117,12 @@ async def update_reminder_time(reminder_id: int, new_time: datetime.datetime):
             (new_time.isoformat(), reminder_id)
         )
         await db.commit()
+
+# fetch all reminders
+async def get_all_reminders():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id, user_id, reason, remind_at, channel_id, recurring_interval FROM reminders ORDER BY remind_at ASC"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return rows

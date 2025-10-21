@@ -16,7 +16,8 @@ from database import (
     add_reminder,
     get_due_reminders,
     delete_reminder,
-    update_reminder_time
+    update_reminder_time,
+    get_all_reminders
 )
 
 dotenv.load_dotenv()
@@ -242,5 +243,31 @@ async def remind_me(interaction: discord.Interaction, reason: str, time: str):
             "❌ Invalid time format! Use either DD/MM/YYYY HH:MM or relative time like 1d2h30m.",
             ephemeral=True
         )
+
+@bot.tree.command(name="reminders", description="List all current reminders")
+async def reminders(interaction: discord.Interaction):
+    all_reminders = await get_all_reminders()
+
+    if not all_reminders:
+        await interaction.response.send_message("📭 No reminders currently set.")
+        return
+
+    embed = discord.Embed(title="⏰ Current Reminders", color=discord.Color.blurple())
+
+    for reminder in all_reminders:
+        reminder_id, user_id, reason, remind_at, channel_id, recurring_interval = reminder
+        remind_dt = datetime.datetime.fromisoformat(remind_at)
+        if remind_dt.tzinfo is None:
+            remind_dt = remind_dt.replace(tzinfo=pytz.UTC)
+
+        german_time = format_german_time(remind_dt)
+        recurring_text = f" (recurs every {recurring_interval}s)" if recurring_interval else ""
+        embed.add_field(
+            name=f"<@{user_id}> – {german_time}{recurring_text}",
+            value=reason,
+            inline=False
+        )
+
+    await interaction.response.send_message(embed=embed)
 
 bot.run(TOKEN)
