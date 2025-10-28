@@ -23,6 +23,9 @@ from database import (
 dotenv.load_dotenv()
 tz = pytz.timezone("Europe/Berlin")
 
+# reminder cache
+disconnect_tasks = {}
+
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -188,15 +191,25 @@ async def disconnect(interaction: discord.Interaction, time: str):
         delta = (target_datetime - now).total_seconds()
 
         await interaction.response.send_message(
-            f"✅ will disconnect everyone in voice at **{target_time.strftime('%H:%M')}**"
+            f"✅ Will disconnect everyone in voice at **{target_time.strftime('%H:%M')}**"
         )
 
-        await asyncio.sleep(delta)
-
-        for guild in bot.guilds:
-            for vc in guild.voice_channels:
+        async def disconnect_task():
+            await asyncio.sleep(delta)
+            for vc in interaction.guild.voice_channels:
                 for member in vc.members:
                     await member.move_to(None)
+            #await interaction.followup.send("🔌 Everyone has been disconnected.")
+
+        # Cancel previous one if exists
+        if interaction.guild.id in disconnect_tasks:
+            disconnect_tasks[interaction.guild.id].cancel()
+
+        task = asyncio.create_task(disconnect_task())
+        disconnect_tasks[interaction.guild.id] = task
+
+    except ValueError:
+        await interaction.response.send_message("❌ Invalid time format! Use HH:MM (24h).")
 
     except ValueError:
         await interaction.response.send_message("❌ Invalid time format! Use HH:MM (24h).")
@@ -263,11 +276,40 @@ async def reminders(interaction: discord.Interaction):
         german_time = format_german_time(remind_dt)
         recurring_text = f" (recurs every {recurring_interval}s)" if recurring_interval else ""
         embed.add_field(
-            name=f"<@{user_id}> – {german_time}{recurring_text}",
+            name=f"🆔 {reminder_id} — <@{user_id}> – {german_time}{recurring_text}",
             value=reason,
             inline=False
         )
 
     await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="cancel_disconnect", description="Cancel the scheduled voice disconnect for this server")
+async def cancel_disconnect(interaction: discord.Interaction):
+    guild_id = interaction.guild.id
+    if guild_id in disconnect_tasks:
+        task = disconnect_tasks[guild_id]
+        task.cancel()
+        del disconnect_tasks[guild_id]
+        await interaction.response.send_message("❌ Scheduled disconnect has been cancelled.")
+    else:
+        await interaction.response.send_message("ℹ️ No disconnect is currently scheduled.")
+
+@bot.tree.command(name="cancel_reminder", description="Cancel one of your reminders")
+async def cancel_reminder(interaction: discord.Interaction, reminder_id: int):
+    all_reminders = await get_all_reminders()
+    target = next((r for r in all_reminders if r[0] == reminder_id and str(r[1]) == str(interaction.user.id)), None)
+
+    if not target:
+        await interaction.response.send_message(
+            "❌ Reminder not found or you don’t have permission to delete it.",
+            ephemeral=True
+        )
+        return
+
+    await delete_reminder(reminder_id)
+    await interaction.response.send_message(
+        f"🗑️ Reminder **{reminder_id}** has been cancelled.",
+        ephemeral=True
+    )
 
 bot.run(TOKEN)
