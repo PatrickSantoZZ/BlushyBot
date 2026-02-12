@@ -6,6 +6,10 @@ import pytz
 import dotenv
 import os
 import re
+import requests
+import time
+from bs4 import BeautifulSoup
+
 
 # import DB helpers
 from database import (
@@ -31,6 +35,10 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 TOKEN = os.getenv("TOKEN")
+
+URL = "https://jwflab.com/en/warframe-prime-order/"
+CACHE = {"data": None, "timestamp": 0}
+CACHE_TTL = 3600  # 1 hour
 
 
 # -----------------------------
@@ -81,6 +89,54 @@ def format_german_time(dt_utc: datetime.datetime):
         day_str = dt_local.strftime("%d/%m/%Y")  # fallback
 
     return f"{day_str} um {dt_local.strftime('%H:%M')} Uhr"
+
+# warframe prime scraper
+def fetch_prime_schedule():
+    r = requests.get(URL, timeout=15)
+    r.raise_for_status()
+
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    content = soup.select_one("#post-2010 .cm-entry-summary")
+    if not content:
+        raise Exception("Content container not found")
+
+    target_table = None
+    for table in content.find_all("table"):
+        headers = [th.get_text(strip=True) for th in table.find_all("th")]
+        if "Prime" in headers and "Scheduled Prime release" in headers:
+            target_table = table
+            break
+
+    if not target_table:
+        raise Exception("Prime schedule table not found")
+
+    results = []
+
+    rows = target_table.find("tbody").find_all("tr")
+    for row in rows:
+        cols = row.find_all("td")
+        if len(cols) < 3:
+            continue
+
+        prime_name = cols[1].get_text(strip=True)
+        release_date = cols[2].get_text(strip=True)
+
+        if prime_name and release_date:
+            results.append((prime_name, release_date))
+
+    return results
+
+# send prime schedule cached
+def get_prime_schedule_cached():
+    now = time.time()
+    if CACHE["data"] and now - CACHE["timestamp"] < CACHE_TTL:
+        return CACHE["data"]
+
+    data = fetch_prime_schedule()
+    CACHE["data"] = data
+    CACHE["timestamp"] = now
+    return data
 
 # -----------------------------
 # Core Bot Logic
@@ -311,5 +367,39 @@ async def cancel_reminder(interaction: discord.Interaction, reminder_id: int):
         f"🗑️ Reminder **{reminder_id}** has been cancelled.",
         ephemeral=True
     )
+
+# warframe prime command
+@bot.tree.command(name="prime_schedule", description="Shows the current Warframe Prime release order")
+async def primes(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    try:
+        primes = get_prime_schedule_cached()
+
+        embed = discord.Embed(
+            title="Warframe Prime Release Schedule",
+            description="Predicted upcoming Prime frames",
+            color=0xC9B037  # gold-like Warframe color
+        )
+
+        formatted_lines = []
+        for name, date in primes:
+            formatted_lines.append(f"**{name} Prime** — {date}")
+
+        embed.add_field(
+            name="Upcoming Releases",
+            value="\n".join(formatted_lines),
+            inline=False
+        )
+
+        embed.set_footer(text="Source: jwflab.com | Auto-updated hourly")
+
+        await interaction.followup.send(embed=embed)
+
+    except Exception as e:
+        await interaction.followup.send(
+            f"Error fetching data: {e}",
+            ephemeral=True
+        )
 
 bot.run(TOKEN)
