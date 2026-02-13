@@ -91,7 +91,7 @@ def format_german_time(dt_utc: datetime.datetime):
     return f"{day_str} um {dt_local.strftime('%H:%M')} Uhr"
 
 # warframe prime scraper
-def fetch_prime_schedule():
+def fetch_prime_data():
     r = requests.get(URL, timeout=15)
     r.raise_for_status()
 
@@ -101,6 +101,7 @@ def fetch_prime_schedule():
     if not content:
         raise Exception("Content container not found")
 
+    # --- Find prediction table ---
     target_table = None
     for table in content.find_all("table"):
         headers = [th.get_text(strip=True) for th in table.find_all("th")]
@@ -111,9 +112,30 @@ def fetch_prime_schedule():
     if not target_table:
         raise Exception("Prime schedule table not found")
 
-    results = []
+    # --- Get confirmed prime safely ---
+    confirmed = None
 
+    # Collect paragraphs before table
+    paragraphs = []
+    for element in content.children:
+        if element == target_table:
+            break
+        if getattr(element, "name", None) == "p":
+            paragraphs.append(element)
+
+    # Walk backwards from closest to table
+    for p in reversed(paragraphs):
+        text = p.get_text(strip=True)
+
+        # Structural filter
+        if "(" in text and ")" in text and "," in text:
+            confirmed = text
+            break
+
+    # --- Get full predicted list ---
+    results = []
     rows = target_table.find("tbody").find_all("tr")
+
     for row in rows:
         cols = row.find_all("td")
         if len(cols) < 3:
@@ -125,15 +147,16 @@ def fetch_prime_schedule():
         if prime_name and release_date:
             results.append((prime_name, release_date))
 
-    return results
+    return confirmed, results
 
 # send prime schedule cached
 def get_prime_schedule_cached():
     now = time.time()
+
     if CACHE["data"] and now - CACHE["timestamp"] < CACHE_TTL:
         return CACHE["data"]
 
-    data = fetch_prime_schedule()
+    data = fetch_prime_data()
     CACHE["data"] = data
     CACHE["timestamp"] = now
     return data
@@ -374,20 +397,38 @@ async def primes(interaction: discord.Interaction):
     await interaction.response.defer()
 
     try:
-        primes = get_prime_schedule_cached()
+        confirmed, primes = get_prime_schedule_cached()
 
         embed = discord.Embed(
             title="Warframe Prime Release Schedule",
-            description="Predicted upcoming Prime frames",
-            color=0xC9B037  # gold-like Warframe color
+            color=0xE0C16F
         )
 
-        formatted_lines = []
-        for name, date in primes:
-            formatted_lines.append(f"**{name} Prime** — {date}")
+        # cOwOnfirmed Prime at top
+        if confirmed:
+            embed.add_field(
+                name="Next Confirmed Prime Frame:",
+                value=f"**{confirmed}**",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="Next Confirmed Prime Frame:",
+                value="No confirmed Prime announced yet.",
+                inline=False
+            )
+
+        # space
+        #embed.add_field(name="\u200b", value="\u200b", inline=False)
+
+        # full predicted list :3
+        formatted_lines = [
+            f"**{name} Prime** — {date}"
+            for name, date in primes
+        ]
 
         embed.add_field(
-            name="Upcoming Releases",
+            name="Predicted Release Order",
             value="\n".join(formatted_lines),
             inline=False
         )
